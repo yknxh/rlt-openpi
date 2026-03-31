@@ -1,0 +1,46 @@
+[project]
+name = "rlt-openpi"
+version = "0.1.0"
+description = "RL Token: Bootstrapping Online RL with Vision-Language-Action Models — built on OpenPI"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "torch==2.7.1",
+    "transformers==4.53.2",
+    "safetensors",
+    "wandb>=0.19",
+    "tyro>=0.9",
+    "tqdm",
+    "pyyaml",
+    "numpy>=1.22.4,<2.0.0",
+    "openpi",
+    # Transitive deps needed by openpi's import chain
+    "chex",
+]
+
+# cmake is a build-time dep of lerobot (openpi transitive) — not needed at runtime.
+# Exclude to avoid wheel resolution failures across platforms.
+[tool.uv]
+override-dependencies = ["cmake ; sys_platform == 'never'"]
+
+[tool.uv.sources]
+openpi = { git = "https://github.com/Physical-Intelligence/openpi", rev = "fdc03f5" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rlt_openpi"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

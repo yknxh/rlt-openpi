@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv — lock file is platform-specific, each user generates their own via `uv sync`
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project-specific
+checkpoints/
+wandb/
+*.safetensors
+*.pt
+*.pth
+assets/
+
+# OS
+.DS_Store
+Thumbs.db
