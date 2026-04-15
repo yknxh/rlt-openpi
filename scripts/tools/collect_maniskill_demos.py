@@ -58,9 +58,13 @@ class CollectConfig:
     task_prompt: str = ""
     image_width: int = 320  # DROID convention
     image_height: int = 180
-    control_mode: str = "pd_joint_delta_pos"  # delta-position: matches LeRobot DROID pipeline's velocity/delta action assumption
+    # Env is run in pd_joint_pos (required by ManiSkill motion-planning solvers),
+    # but stored actions have arm dims converted to deltas below so the dataset
+    # matches the LeRobot DROID pipeline's delta assumption.
+    control_mode: str = "pd_joint_pos"
     max_episode_steps: int = 200
     fps: int = 15  # match DROID recording fps
+    control_freq: int = 15  # match DROID control rate (15 Hz)
     seed: int = 0
     overwrite: bool = False
 
@@ -121,10 +125,14 @@ def main(cfg: CollectConfig) -> None:
         image_writer_processes=4,
     )
 
+    sim_freq = max(120, cfg.control_freq * 8)
+    sim_freq -= sim_freq % cfg.control_freq
+
     env = gym.make(
         cfg.env_id,
         obs_mode="rgb",
         control_mode=cfg.control_mode,
+        sim_config=dict(sim_freq=sim_freq, control_freq=cfg.control_freq),
         render_mode="rgb_array",
         sensor_configs=dict(width=cfg.image_width, height=cfg.image_height),
         max_episode_steps=cfg.max_episode_steps,
@@ -197,7 +205,18 @@ def main(cfg: CollectConfig) -> None:
                 break
             qpos = _to_numpy(obs_t["agent"]["qpos"]).astype(np.float32)
             joint_pos = qpos[:7]
-            gripper_pos = np.asarray([float(qpos[7])], dtype=np.float32)
+            # Gripper state: remap ManiSkill finger displacement (~[0, 0.04] m)
+            # to DROID-style scalar in [0, 1] where 0=open, 1=closed.
+            gripper_pos = np.asarray(
+                [float(np.clip(1.0 - qpos[7] / 0.04, 0.0, 1.0))], dtype=np.float32
+            )
+
+            # Arm dims become deltas (target - current) to match the LeRobot
+            # DROID pipeline's velocity/delta assumption. Gripper action gets
+            # remapped from ManiSkill's [-1, 1] (open..close) to DROID [0, 1].
+            action_t = action_t.copy()
+            action_t[:7] = action_t[:7] - joint_pos
+            action_t[7] = float(np.clip(0.5 * (action_t[7] + 1.0), 0.0, 1.0))
 
             base_img = _get_camera_image(obs_t, "base_camera")
             hand_img = _get_camera_image(obs_t, "hand_camera")

@@ -61,7 +61,12 @@ class ManiSkillSimEnv(SimEnv):
         qpos = self._to_numpy(obs["agent"]["qpos"])
         # Panda qpos is 9-dim (7 arm + 2 gripper fingers).
         joint_position = np.asarray(qpos[:7], dtype=np.float32)
-        gripper_position = np.asarray([float(qpos[7])], dtype=np.float32)
+        # Remap ManiSkill finger displacement (~[0, 0.04] m) to DROID-style
+        # scalar in [0, 1] where 0=open, 1=closed. Must match the convention
+        # used when collecting demos.
+        gripper_position = np.asarray(
+            [float(np.clip(1.0 - qpos[7] / 0.04, 0.0, 1.0))], dtype=np.float32
+        )
 
         base_img = self._get_camera_image(obs, "base_camera")
         hand_img = self._get_camera_image(obs, "hand_camera")
@@ -95,7 +100,11 @@ class ManiSkillSimEnv(SimEnv):
         k = 0
 
         for k in range(C):
-            step_action = np.asarray(action_chunk[k], dtype=np.float32)
+            step_action = np.asarray(action_chunk[k], dtype=np.float32).copy()
+            # VLA emits gripper in DROID-style [0, 1]; ManiSkill expects [-1, 1]
+            # on its gripper action dim. Arm dims are already deltas, matching
+            # pd_joint_delta_pos.
+            step_action[7] = float(np.clip(2.0 * step_action[7] - 1.0, -1.0, 1.0))
             obs, reward, terminated, truncated, info = self.env.step(step_action)
             rewards[k] = float(self._to_numpy(reward))
             term = bool(self._to_numpy(terminated))
@@ -130,6 +139,7 @@ def make_maniskill_env(
     image_width: int = 320,
     image_height: int = 180,
     control_mode: str = "pd_joint_delta_pos",
+    control_freq: int = 15,  # match DROID control rate
     reward_mode: str = "normalized_dense",
     record_video_dir: str = "",
     **kwargs,
@@ -162,10 +172,16 @@ def make_maniskill_env(
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401 — registers envs with gymnasium
 
+    # control_freq must divide sim_freq; bump sim_freq off its default (100)
+    # to a multiple of control_freq.
+    sim_freq = max(120, control_freq * 8)
+    sim_freq -= sim_freq % control_freq
+
     env = gym.make(
         env_id,
         obs_mode="rgb",
         control_mode=control_mode,
+        sim_config=dict(sim_freq=sim_freq, control_freq=control_freq),
         reward_mode=reward_mode,
         render_mode="rgb_array",
         sensor_configs=dict(width=image_width, height=image_height),
