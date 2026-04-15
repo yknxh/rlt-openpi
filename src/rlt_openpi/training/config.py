@@ -86,6 +86,7 @@ class OnlineRLTrainConfig:
     intervention_factory: str = ""  # Python import path, e.g. "rlt_openpi.envs.franka.intervention.make_vr_intervention"
     task_prompt: str = ""  # Task instruction for VLA (passed to env factory)
     max_episode_chunks: int = 150  # Max chunks per episode before forced termination
+    env_kwargs_json: str = ""  # Extra env-factory kwargs, JSON-encoded (merged into make_env call)
 
     # Training loop
     max_env_steps: int = 100_000

@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 
 import torch
@@ -77,12 +78,19 @@ def main(config: OnlineRLTrainConfig) -> None:
         log.error("--env-factory is required. Provide a Python import path to an env factory function.")
         raise SystemExit(1)
 
+    extra_env_kwargs: dict = {}
+    if config.env_kwargs_json:
+        extra_env_kwargs = json.loads(config.env_kwargs_json)
+        if not isinstance(extra_env_kwargs, dict):
+            raise ValueError("--env-kwargs-json must decode to a JSON object")
+
     env = make_env(
         config.env_factory,
         action_dim=config.action_dim,
         chunk_length=config.chunk_length,
         task_prompt=config.task_prompt,
         max_episode_chunks=config.max_episode_chunks,
+        **extra_env_kwargs,
     )
     log.info("Environment created: action_dim=%d, chunk_length=%d", env.action_dim, env.chunk_length)
 

@@ -36,6 +36,7 @@ from pathlib import Path
 
 import torch
 import tyro
+from tqdm import tqdm
 
 from rlt_openpi.models.actor import Actor
 from rlt_openpi.rollout.factory import make_env
@@ -48,6 +49,15 @@ from rlt_openpi.vla.vla_wrapper import VLAWrapper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger(__name__)
+
+
+def _parse_env_kwargs(raw: str) -> dict:
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("--env-kwargs-json must decode to a JSON object")
+    return parsed
 
 
 @dataclass
@@ -64,6 +74,7 @@ class EvalConfig:
     vla_checkpoint_dir: str = ""
     rl_token_checkpoint: str = ""
     env_factory: str = ""
+    env_kwargs_json: str = ""  # Extra env-factory kwargs, JSON-encoded
     task_prompt: str = ""
     action_dim: int = 8
     chunk_length: int = 10
@@ -109,6 +120,7 @@ def _run(config: EvalConfig) -> None:
         action_dim=train_config.action_dim,
         chunk_length=train_config.chunk_length,
         task_prompt=config.task_prompt,
+        **_parse_env_kwargs(config.env_kwargs_json),
     )
     log.info("Environment created: action_dim=%d, chunk_length=%d", env.action_dim, env.chunk_length)
 
@@ -162,15 +174,19 @@ def _run_vla(config: EvalConfig) -> None:
         action_dim=config.action_dim,
         chunk_length=config.chunk_length,
         task_prompt=config.task_prompt,
+        **_parse_env_kwargs(config.env_kwargs_json),
     )
     log.info("Environment created: action_dim=%d, chunk_length=%d", env.action_dim, env.chunk_length)
 
     episodes = []
-    for ep in range(config.num_episodes):
+    pbar = tqdm(range(config.num_episodes), desc="VLA eval", unit="ep")
+    num_success = 0
+    for ep in pbar:
         obs = env.reset()
         episode_reward = 0.0
         episode_chunks = 0
 
+        chunk_pbar = tqdm(desc=f"ep {ep+1}", unit="chunk", leave=False)
         while True:
             with torch.no_grad():
                 vla_input = vla.preprocess_obs(obs)
@@ -180,9 +196,12 @@ def _run_vla(config: EvalConfig) -> None:
             next_obs, chunk_rewards, done, info = env.step(action_chunk)
             episode_reward += float(chunk_rewards.sum())
             episode_chunks += 1
+            chunk_pbar.update(1)
+            chunk_pbar.set_postfix(reward=f"{episode_reward:.2f}")
 
             if done:
                 success = info.get("success", False)
+                num_success += int(bool(success))
                 episodes.append({
                     "episode": ep,
                     "reward": episode_reward,
@@ -190,6 +209,11 @@ def _run_vla(config: EvalConfig) -> None:
                     "num_chunks": episode_chunks,
                     "num_steps": info.get("steps_executed", episode_chunks * config.chunk_length),
                 })
+                chunk_pbar.close()
+                pbar.set_postfix(
+                    success_rate=f"{num_success}/{ep+1}",
+                    last_reward=f"{episode_reward:.2f}",
+                )
                 log.info(
                     "Episode %d/%d: chunks=%d, reward=%.3f, success=%s",
                     ep + 1, config.num_episodes, episode_chunks, episode_reward, success,
