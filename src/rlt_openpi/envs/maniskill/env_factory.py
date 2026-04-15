@@ -66,17 +66,20 @@ class ManiSkillSimEnv(SimEnv):
         base_img = self._get_camera_image(obs, "base_camera")
         hand_img = self._get_camera_image(obs, "hand_camera")
         right_img = self._get_camera_image(obs, "right_camera")
-        if right_img is None:
-            right_img = base_img  # fall back to duplicating base view
 
-        return {
+        out: dict[str, Any] = {
             "observation/joint_position": joint_position,
             "observation/gripper_position": gripper_position,
             "observation/exterior_image_1_left": base_img,
             "observation/wrist_image_left": hand_img,
-            "observation/exterior_image_2_left": right_img,
             "prompt": self._task_prompt,
         }
+        # Only include the 3rd-view slot if a real camera exists. Otherwise
+        # ThreeCameraDroidInputs zero-fills it with mask=False, matching the
+        # 2-real + 1-masked setup pi05_droid was pretrained on.
+        if right_img is not None:
+            out["observation/exterior_image_2_left"] = right_img
+        return out
 
     def reset(self, **kwargs: Any) -> dict[str, Any]:
         self._chunks_executed = 0

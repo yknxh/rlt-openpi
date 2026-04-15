@@ -74,13 +74,11 @@ def _to_numpy(x) -> np.ndarray:
     return arr
 
 
-def _get_camera_image(obs: dict, cam_name: str, fallback: np.ndarray | None) -> np.ndarray:
+def _get_camera_image(obs: dict, cam_name: str) -> np.ndarray | None:
     sensors = obs.get("sensor_data", {})
     if cam_name in sensors and sensors[cam_name].get("rgb") is not None:
         return _to_numpy(sensors[cam_name]["rgb"]).astype(np.uint8)
-    if fallback is None:
-        raise RuntimeError(f"Camera {cam_name} missing and no fallback available")
-    return fallback
+    return None
 
 
 def main(cfg: CollectConfig) -> None:
@@ -114,7 +112,6 @@ def main(cfg: CollectConfig) -> None:
         fps=cfg.fps,
         features={
             "exterior_image_1_left": {"dtype": "image", "shape": img_shape, "names": ["height", "width", "channel"]},
-            "exterior_image_2_left": {"dtype": "image", "shape": img_shape, "names": ["height", "width", "channel"]},
             "wrist_image_left": {"dtype": "image", "shape": img_shape, "names": ["height", "width", "channel"]},
             "joint_position": {"dtype": "float32", "shape": (7,), "names": ["joint_position"]},
             "gripper_position": {"dtype": "float32", "shape": (1,), "names": ["gripper_position"]},
@@ -202,14 +199,17 @@ def main(cfg: CollectConfig) -> None:
             joint_pos = qpos[:7]
             gripper_pos = np.asarray([float(qpos[7])], dtype=np.float32)
 
-            base_img = _get_camera_image(obs_t, "base_camera", None)
-            hand_img = _get_camera_image(obs_t, "hand_camera", base_img)
-            right_img = _get_camera_image(obs_t, "right_camera", base_img)
+            base_img = _get_camera_image(obs_t, "base_camera")
+            hand_img = _get_camera_image(obs_t, "hand_camera")
+            if base_img is None or hand_img is None:
+                raise RuntimeError(
+                    "Expected base_camera and hand_camera in observation; "
+                    "check env supports them (e.g. uses PandaWristCam agent)."
+                )
 
             dataset.add_frame(
                 {
                     "exterior_image_1_left": base_img,
-                    "exterior_image_2_left": right_img,
                     "wrist_image_left": hand_img,
                     "joint_position": joint_pos,
                     "gripper_position": gripper_pos,
