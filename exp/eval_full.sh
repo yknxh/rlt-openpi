@@ -1,5 +1,8 @@
 #!/bin/bash
 # Evaluate the full trained model (Stage 1 RL token + Stage 2 actor).
+set -euo pipefail
+
+[ -f .env ] && set -a && . ./.env && set +a
 
 python scripts/evaluate.py \
     --env-factory rlt_openpi.envs.franka.env_factory.make_franka_env \
