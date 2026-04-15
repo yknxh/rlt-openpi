@@ -43,8 +43,8 @@ conda run -n "${ENV_NAME}" pip install uv
 echo "==> Installing openpi from GitHub (rev ${OPENPI_REV})..."
 conda run -n "${ENV_NAME}" uv pip install "${OPENPI_URL}"
 
-echo "==> Installing rlt-openpi (with dev dependencies)..."
-conda run -n "${ENV_NAME}" uv pip install -e "${SCRIPT_DIR}[dev]" \
+echo "==> Installing rlt-openpi (with dev + sim dependencies)..."
+conda run -n "${ENV_NAME}" uv pip install -e "${SCRIPT_DIR}[dev,sim]" --prerelease=allow \
     --overrides /dev/stdin <<EOF
 ${OPENPI_URL}
 EOF

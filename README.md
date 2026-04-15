@@ -6,7 +6,7 @@ Paper: https://pi.website/research/rlt
 
 ![RLT method overview — data, VLA with RL token, online RL, and final RL policy tasks.](docs/rlt_overview.png)
 
-> **Note on the example environment.** The end-to-end commands, scripts under `exp/`, and the hardware sections below use a **Franka Panda + DROID + Oculus VR** setup as a concrete example — that's the rig this repo was developed against. RLT itself is environment-agnostic: the env, intervention manager, data transforms, and VLA checkpoint are all pluggable. If you are running against a different robot, simulator, dataset, or VLA configuration, substitute your own `--env-factory`, `--intervention-factory`, `--data-transforms-fn`, and `--vla-config-name` accordingly.
+> **Supported environments.** Two backends ship out of the box: a **real Franka Panda + DROID + Oculus VR** rig (`exp/robot_*.sh`) and a **ManiSkill3 simulation** backend (`exp/sim_*.sh`). RLT itself is environment-agnostic — env, intervention manager, data transforms, and VLA checkpoint are all pluggable via `--env-factory`, `--intervention-factory`, `--data-transforms-fn`, and `--vla-config-name`.
 
 ---
 
@@ -19,14 +19,18 @@ src/rlt_openpi/
   vla/             OpenPI VLA wrapper, embedding extractor hooks
   rollout/         RolloutWorker, base env/intervention/reward interfaces, factory
   envs/franka/     Example Franka+DROID env factory, VR intervention manager
+  envs/maniskill/  ManiSkill3 simulation env factory (DROID-schema obs)
   policies/franka/ Example three-camera DROID data transforms
   utils/           Checkpoint I/O, wandb logger, rich terminal UI
 scripts/
   train_rl_token.py    Stage 1 entry point
   train_online_rl.py   Stage 2 entry point
   evaluate.py          Unified Stage 1 / Stage 2 evaluation
+  tools/               Data-prep utilities (LeRobot conversion, ManiSkill demo collection, ...)
 exp/
-  stage1.sh, stage2.sh, eval_vla.sh, eval_full.sh   Example run commands
+  robot_stage1.sh, robot_stage2.sh    Real-robot (Franka+DROID) runs
+  sim_stage1.sh, sim_stage2.sh        ManiSkill simulation runs
+  eval_vla.sh, eval_full.sh, eval_sim.sh   Evaluation entry points
 tests/               Unit tests for models, buffers, and training loop
 ```
 
@@ -41,7 +45,7 @@ bash setup_env.sh        # creates a conda env named 'rlt'
 conda activate rlt
 ```
 
-The script creates a conda env with Python 3.11, installs OpenPI + rlt-openpi via `uv` (needed for OpenPI's deep dependency graph), and patches `transformers` with OpenPI's `transformers_replace` files.
+The script creates a conda env with Python 3.11, installs OpenPI + rlt-openpi (including [ManiSkill3](https://github.com/haosulab/ManiSkill) for the simulation pipeline) via `uv`, and patches `transformers` with OpenPI's `transformers_replace` files.
 
 You can pass a custom env name: `bash setup_env.sh myenvname`.
 
@@ -55,6 +59,8 @@ conda activate rlt
 ```
 
 Requires the ZED SDK at `/usr/local/zed` for pyzed bindings (skipped gracefully if not found).
+
+> **`.env`**: each `exp/*.sh` auto-sources a project-root `.env` (gitignored). Run `cp .env.example .env` and fill in `WANDB_API_KEY`, `HF_LEROBOT_HOME`, etc. before launching any experiment.
 
 ---
 
@@ -75,17 +81,22 @@ This produces a `model.safetensors` file. Point `--train.vla-checkpoint-dir` / `
 
 ## Data
 
-Stage 1 training reads demonstrations in [LeRobot](https://github.com/huggingface/lerobot) format. The dataset is located by `repo_id` — LeRobot resolves it to `$HF_LEROBOT_HOME/<repo_id>/` on disk (default `~/.cache/huggingface/lerobot/<repo_id>/`).
+Stage 1 reads [LeRobot](https://github.com/huggingface/lerobot) datasets. Dataset location is resolved as `$HF_LEROBOT_HOME/<repo_id>/` (default `~/.cache/huggingface/lerobot/`) — set `HF_LEROBOT_HOME` in `.env` and pass the subdirectory as `--repo-id`.
 
-To use a **local dataset**, set the environment variable before launching training:
+All datasets share the same DROID-style schema: three cameras (`exterior_image_1_left`, `exterior_image_2_left`, `wrist_image_left`), 7-dim `joint_position`, 1-dim `gripper_position`, and 8-dim `actions`. Two ways to produce one:
 
+**Real-robot demos (Franka/DROID).**
+Convert raw DROID HDF5 files → LeRobot, then precompute normalization statistics:
 ```bash
-export HF_LEROBOT_HOME="/path/to/your/data"
+python scripts/tools/convert_to_lerobot.py --data-dir /path/to/demo_hdf5s --repo-name local/my_task
+python scripts/tools/compute_norm_stats.py --repo-id local/my_task
 ```
 
-For example, if your dataset lives at `/data/my_task_lerobot/`, set `HF_LEROBOT_HOME=/data` and pass `--repo-id my_task_lerobot`.
-
-For details on converting raw demonstrations to LeRobot format and computing normalization statistics, refer to the [OpenPI data preparation scripts](https://github.com/Physical-Intelligence/openpi/tree/main/scripts/data_prep) (`convert_to_lerobot.py` and `compute_norm_stats.py`).
+**ManiSkill sim demos.**
+The built-in motion-planning oracle generates 200 successful episodes for `PegInsertionSide-v1` (default) or `PlugCharger-v1`:
+```bash
+bash exp/sim_stage1.sh --collect-demos   # runs collect_maniskill_demos.py then trains
+```
 
 ---
 
@@ -93,7 +104,7 @@ For details on converting raw demonstrations to LeRobot format and computing nor
 
 Trains a small encoder/decoder to compress the VLA's internal per-token embeddings `z_{1:M}` into a single **RL token** `z_rl`, via masked MSE reconstruction on a LeRobot demonstration dataset. With `--train.vla-finetune-alpha 0` the VLA is frozen; with `α > 0` the VLA is co-finetuned using a weighted flow-matching loss (matching the paper's `L_ro + α · L_vla` objective).
 
-Example command (see `exp/stage1.sh`):
+Example command (see `exp/robot_stage1.sh`, or `exp/sim_stage1.sh` for ManiSkill — pass `--collect-demos` to collect demonstrations first):
 
 ```bash
 CHECKPOINT_DIR="$HOME/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch/model.safetensors"
@@ -108,40 +119,15 @@ python scripts/train_rl_token.py \
     --data-transforms-fn rlt_openpi.policies.franka.config.three_camera_droid
 ```
 
-Swap `--repo-id`, `--data-transforms-fn`, and the VLA config/checkpoint for your own dataset and robot.
-
-Key flags (full list in `src/rlt_openpi/training/config.py::RLTokenTrainConfig`):
-
-| Flag | Purpose |
-| --- | --- |
-| `--train.vla-finetune-alpha` | `0.0` = frozen VLA (only encoder/decoder trained); `> 0` = joint finetune. |
-| `--train.num-train-steps` | Default `5000`. |
-| `--train.batch-size` | Default `32`. |
-| `--train.warmup-steps` | Linear LR warmup, default `500`. |
-| `--train.resume-checkpoint` | Resume from a previous `rl_token_step<N>.pt`. |
-| `--train.save-every` | Checkpoint interval (default `1000`). |
-| `--repo-id` | LeRobot dataset ID. |
-| `--data-transforms-fn` | Import path to a data-transform factory (e.g. `rlt_openpi.policies.franka.config.three_camera_droid`). |
-
-Outputs land under `checkpoints/rl_token/<run_name>/rl_token_step<N>.pt`, where `run_name` defaults to `run_YYYYMMDD_HHMMSS`.
+Swap `--repo-id`, `--data-transforms-fn`, and the VLA config/checkpoint for your own dataset and robot. All flags are documented in `src/rlt_openpi/training/config.py::RLTokenTrainConfig`. Outputs land under `checkpoints/rl_token/<run_name>/rl_token_step<N>.pt`.
 
 ---
 
 ## Stage 2: Online RL
 
-With VLA + encoder frozen, a lightweight **Actor** and **Twin-Q Critic** are trained online. The actor conditions on `(z_rl, VLA reference action chunk)` and outputs a **residual** over the VLA's proposal (zero-initialized last layer, so the actor starts as a copy of the VLA). The loop first runs a **warmup phase** collecting episodes with the base VLA policy, then alternates between rollout collection and off-policy TD3-style updates at UTD = 5, with a BC regularizer pulling the actor toward the VLA reference and reference-action dropout. A human supervisor provides sparse success/failure/progress rewards and can take over the robot via a VR controller mid-episode; interventions are stored in the replay buffer as corrective labels.
+With VLA + encoder frozen, a lightweight **Actor** and **Twin-Q Critic** are trained online. The actor outputs a residual over the VLA's reference action chunk (zero-initialized last layer, so it starts as a copy of the VLA). After a warmup phase of pure VLA rollouts, training alternates between rollout collection and off-policy TD3 updates with a BC regularizer toward the VLA reference. See the paper for the full algorithm.
 
-### Example hardware (Franka + DROID + VR)
-
-The example `--env-factory` and `--intervention-factory` target:
-
-- Franka Panda driven by the DROID stack (joint-velocity control).
-- Three ZED cameras matching the layout expected by `three_camera_droid`.
-- Oculus/VR controller wired into `src/rlt_openpi/envs/franka/intervention.py` (`make_vr_intervention`).
-
-To run against a different robot or simulator, implement your own `make_env` / `make_intervention` callables (see the Franka example as a template) and pass their import paths via `--env-factory` and `--intervention-factory`.
-
-### Example command (see `exp/stage2.sh`)
+### Example command (see `exp/robot_stage2.sh`, or `exp/sim_stage2.sh` for ManiSkill)
 
 ```bash
 python scripts/train_online_rl.py \
@@ -157,21 +143,7 @@ python scripts/train_online_rl.py \
     --save-dir checkpoints/online_rl
 ```
 
-Key flags (full list in `src/rlt_openpi/training/config.py::OnlineRLTrainConfig`):
-
-| Flag | Purpose |
-| --- | --- |
-| `--env-factory` | Import path to a `make_env` callable. |
-| `--intervention-factory` | Import path to a `make_intervention` callable. Optional. |
-| `--rl-token-checkpoint` | Stage 1 checkpoint (encoder + optional finetuned VLA). |
-| `--task-prompt` | Language instruction passed to the VLA each step. |
-| `--warmup-steps` | Number of env steps of pure base-VLA data collection before RL updates start. |
-| `--chunk-length` | Action chunk length `C`. |
-| `--max-episode-chunks` | Safety cap per episode. |
-| `--warmup-buffer` | Load a previously saved warmup buffer and skip the warmup phase. |
-| `--resume-checkpoint` | Resume a Stage 2 run. |
-
-Defaults worth knowing: `gamma=0.99`, `tau=0.005`, `utd_ratio=5`, `bc_regularizer_beta=0.5`, `actor_noise_sigma=0.1`, `ref_action_dropout=0.5`, `batch_size=256`.
+All flags and hyperparameters are in `src/rlt_openpi/training/config.py::OnlineRLTrainConfig`. Pass a custom `--env-factory` / `--intervention-factory` to run against your own robot or simulator.
 
 ---
 
@@ -213,31 +185,11 @@ Results (per-episode success, reward, length) are written to JSON under the run'
 
 ---
 
-## Tests
-
-```bash
-pytest tests/
-```
-
-Covers: RL token encoder/decoder shapes, VLA embedding extraction hooks, Actor + TwinQCritic forward/backward, replay buffer, and an end-to-end Stage 2 trainer smoke test.
-
----
-
 ## Status & Limitations
 
 This is an **implementation** — unofficial and not affiliated with Physical Intelligence. It is under active development and may still contain bugs.
 
-Currently implemented:
-
-- Stage 1 RL token training with both frozen-VLA and joint VLA-finetune modes.
-- Stage 2 TD3-style online RL (twin Q, delayed actor, Polyak targets, BC regularizer, reference-action dropout, subsampled chunk stride).
-- Example Franka/DROID env wrapper with three ZED cameras.
-- Example VR intervention via an Oculus controller (corrective actions written to the buffer).
-- Keyboard-based human reward shaping.
-- Rich terminal UI for warmup + rollout progress.
-- Evaluation script that auto-detects Stage 1 vs Stage 2 checkpoints.
-
-Not yet validated end-to-end on the four paper tasks (screw installation, zip-tie fastening, Ethernet insertion, charger insertion). Only the Franka + DROID + VR path has been exercised during development; other robots, simulators, and VLA configs are supported in principle but untested here.
+Both training stages, human-in-the-loop controls, and an evaluation script are wired up end-to-end for the Franka/DROID/VR rig and the ManiSkill sim backend. Not yet validated end-to-end on the four paper tasks (screw installation, zip-tie fastening, Ethernet insertion, charger insertion); other robots and VLA configs are supported in principle but untested here.
 
 ---
 
