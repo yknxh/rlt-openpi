@@ -46,6 +46,7 @@ packages = ["src/rlt_openpi"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.8"]
+sim = ["mani-skill>=3.0.0b22"]
 
 [tool.ruff]
 line-length = 120
