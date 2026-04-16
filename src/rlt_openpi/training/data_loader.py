@@ -49,6 +49,21 @@ def _patch_repack_action_key(data_config, action_key: str):
     return dataclasses.replace(data_config, repack_transforms=repack)
 
 
+def _drop_missing_repack_keys(data_config, available_keys: set[str]):
+    """Remove repack entries whose source key is absent from the dataset."""
+    new_inputs = []
+    for t in data_config.repack_transforms.inputs:
+        if isinstance(t, _transforms.RepackTransform):
+            pruned = {k: v for k, v in t.structure.items() if v in available_keys}
+            dropped = set(t.structure) - set(pruned)
+            if dropped:
+                logger.info("Dropping repack keys missing from dataset: %s", sorted(dropped))
+            t = _transforms.RepackTransform(pruned)
+        new_inputs.append(t)
+    repack = _transforms.Group(inputs=new_inputs)
+    return dataclasses.replace(data_config, repack_transforms=repack)
+
+
 def build_data_loader(
     openpi_config_name: str,
     repo_id: str,
@@ -99,6 +114,9 @@ def build_data_loader(
             data_config, action_sequence_keys=("action",)
         )
         data_config = _patch_repack_action_key(data_config, "action")
+
+    available_keys = set(meta.features) | {"prompt"}
+    data_config = _drop_missing_repack_keys(data_config, available_keys)
 
     if data_transforms is not None:
         logger.info("Overriding data_transforms with custom Group")

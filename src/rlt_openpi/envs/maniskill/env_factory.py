@@ -33,6 +33,7 @@ class ManiSkillSimEnv(SimEnv):
         self._task_prompt = task_prompt
         self._max_episode_chunks = max_episode_chunks
         self._chunks_executed = 0
+        self._current_qpos: NDArray | None = None
 
     @property
     def max_episode_chunks(self) -> int:
@@ -89,6 +90,7 @@ class ManiSkillSimEnv(SimEnv):
     def reset(self, **kwargs: Any) -> dict[str, Any]:
         self._chunks_executed = 0
         obs, _info = self.env.reset(**kwargs)
+        self._current_qpos = self._to_numpy(obs["agent"]["qpos"])
         return self._make_obs_dict(obs)
 
     def step(self, action_chunk: NDArray):
@@ -101,11 +103,14 @@ class ManiSkillSimEnv(SimEnv):
 
         for k in range(C):
             step_action = np.asarray(action_chunk[k], dtype=np.float32).copy()
-            # VLA emits gripper in DROID-style [0, 1]; ManiSkill expects [-1, 1]
-            # on its gripper action dim. Arm dims are already deltas, matching
-            # pd_joint_delta_pos.
+            # VLA emits arm deltas and gripper in DROID-style [0, 1].
+            # Convert arm deltas to absolute joint position targets (matching
+            # pd_joint_pos used during demo collection) and remap gripper
+            # from DROID [0, 1] to ManiSkill [-1, 1].
+            step_action[:7] = self._current_qpos[:7] + step_action[:7]
             step_action[7] = float(np.clip(2.0 * step_action[7] - 1.0, -1.0, 1.0))
             obs, reward, terminated, truncated, info = self.env.step(step_action)
+            self._current_qpos = self._to_numpy(obs["agent"]["qpos"])
             rewards[k] = float(self._to_numpy(reward))
             term = bool(self._to_numpy(terminated))
             trunc = bool(self._to_numpy(truncated))
@@ -138,7 +143,7 @@ def make_maniskill_env(
     max_episode_chunks: int = 50,
     image_width: int = 320,
     image_height: int = 180,
-    control_mode: str = "pd_joint_delta_pos",
+    control_mode: str = "pd_joint_pos",
     control_freq: int = 15,  # match DROID control rate
     reward_mode: str = "normalized_dense",
     record_video_dir: str = "",
@@ -156,11 +161,10 @@ def make_maniskill_env(
         max_episode_chunks: Per-env-wrapper cap in number of chunks.
         image_width: Camera image width (default 320 — matches DROID convention).
         image_height: Camera image height (default 180 — matches DROID convention).
-        control_mode: ManiSkill control mode. ``pd_joint_delta_pos`` (default)
-            yields an 8-dim joint-delta + gripper action, matching the
-            velocity/delta action assumption of OpenPI's
-            ``LeRobotDROIDDataConfig`` pipeline used by ``pi05_droid_finetune``.
-            Must match the control mode used at demo-collection time.
+        control_mode: ManiSkill control mode. ``pd_joint_pos`` (default)
+            matches the controller used during demo collection. The wrapper
+            converts VLA delta outputs to absolute position targets before
+            stepping. Must match the control mode used at demo-collection time.
         reward_mode: ManiSkill reward mode. One of:
             - ``"normalized_dense"`` (default): shaped reward in ~[0, 1] per step.
             - ``"dense"``: shaped reward, un-normalized (raw magnitude).
